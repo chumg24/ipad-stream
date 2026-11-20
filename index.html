@@ -83,4 +83,84 @@
 
     function startReceiver() {
       document.getElementById("menu").style.display = "none";
-      document.getElementById
+      document.getElementById("receiverBox").style.display = "block";
+
+      const code = Math.floor(1000 + Math.random() * 9000).toString();
+      peer = new Peer(PREFIX + code, { config: ICE_CONFIG });
+
+      peer.on("open", () => {
+        document.getElementById("roomCode").textContent = code;
+        document.getElementById("rxStatus").textContent = "Waiting for iPad...";
+      });
+
+      peer.on("call", (call) => {
+        document.getElementById("rxStatus").textContent = "Incoming stream...";
+        call.answer(); // Answer without sending a local stream back
+
+        call.on("stream", (remoteStream) => {
+          const video = document.getElementById("remoteVideo");
+          video.srcObject = remoteStream;
+          video.style.display = "block";
+          video.play().catch(() => {});
+          document.getElementById("rxStatus").textContent = "Connected! Streaming live.";
+        });
+
+        call.on("close", () => {
+          document.getElementById("rxStatus").textContent = "Stream ended.";
+        });
+      });
+
+      peer.on("error", (err) => {
+        document.getElementById("rxStatus").textContent = "Error: " + err.type;
+      });
+    }
+
+    function showSender() {
+      document.getElementById("menu").style.display = "none";
+      document.getElementById("senderBox").style.display = "block";
+    }
+
+    async function startSharing() {
+      const code = document.getElementById("codeInput").value.trim();
+      const status = document.getElementById("txStatus");
+      if (code.length !== 4) {
+        status.textContent = "Please enter the 4-digit code from your PC.";
+        return;
+      }
+
+      try {
+        status.textContent = "Opening iPad screen picker...";
+        // Must be called directly inside the button click handler for Safari
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: 60, max: 60 } },
+          audio: false
+        });
+
+        status.textContent = "Connecting to PC...";
+        peer = new Peer({ config: ICE_CONFIG });
+
+        peer.on("open", () => {
+          const call = peer.call(PREFIX + code, stream);
+          status.textContent = "Streaming to PC!";
+
+          stream.getVideoTracks()[0].onended = () => {
+            call.close();
+            status.textContent = "Screen sharing stopped.";
+          };
+        });
+
+        peer.on("error", (err) => {
+          status.textContent = "Error: " + err.type;
+        });
+      } catch (err) {
+        status.textContent = "Capture failed: " + err.message;
+      }
+    }
+
+    function toggleFullscreen() {
+      const video = document.getElementById("remoteVideo");
+      if (video.requestFullscreen) video.requestFullscreen();
+    }
+  </script>
+</body>
+</html>
