@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>iPad to PC Stream</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+    body {
+      margin: 0; background: #0f1115; color: #e6e8ec;
+      display: flex; flex-direction: column; align-items: center;
+      min-height: 100vh; padding: 20px; gap: 16px;
+    }
+    .card {
+      background: #1a1d24; border: 1px solid #2b303b; border-radius: 12px;
+      padding: 20px; width: 100%; max-width: 460px; text-align: center;
+    }
+    h1 { margin: 0 0 12px; font-size: 1.3rem; }
+    .row { display: flex; gap: 10px; justify-content: center; margin-top: 12px; }
+    button {
+      background: #3b82f6; color: white; border: none; border-radius: 8px;
+      padding: 12px 18px; font-size: 1rem; font-weight: 600; cursor: pointer;
+    }
+    button.secondary { background: #2b303b; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    input {
+      background: #0f1115; color: white; border: 1px solid #3a4150;
+      border-radius: 8px; padding: 12px; font-size: 1.1rem;
+      text-align: center; width: 140px; letter-spacing: 3px;
+    }
+    .code {
+      font-size: 2.2rem; font-weight: 800; letter-spacing: 6px;
+      color: #60a5fa; margin: 10px 0;
+    }
+    #status { font-size: 0.9rem; color: #9ca3af; margin-top: 10px; }
+    video {
+      width: 100%; max-width: 1280px; max-height: 80vh;
+      background: #000; border-radius: 12px; display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="menu">
+    <h1>iPad → PC Screen Stream</h1>
+    <div class="row">
+      <button onclick="startReceiver()">I'm on PC (Receive)</button>
+      <button class="secondary" onclick="showSender()">I'm on iPad (Send)</button>
+    </div>
+  </div>
+
+  <!-- PC Receiver UI -->
+  <div class="card" id="receiverBox" style="display:none;">
+    <h1>PC Receiver</h1>
+    <div>Enter this code on your iPad:</div>
+    <div class="code" id="roomCode">----</div>
+    <button class="secondary" onclick="toggleFullscreen()">Fullscreen</button>
+    <div id="rxStatus">Connecting to signaling server...</div>
+  </div>
+
+  <!-- iPad Sender UI -->
+  <div class="card" id="senderBox" style="display:none;">
+    <h1>iPad Sender</h1>
+    <div class="row">
+      <input id="codeInput" type="number" placeholder="1234" maxlength="4" />
+      <button id="shareBtn" onclick="startSharing()">Share Screen</button>
+    </div>
+    <div id="txStatus">Enter the 4-digit code from your PC.</div>
+  </div>
+
+  <video id="remoteVideo" autoplay playsinline muted></video>
+
+  <script>
+    const PREFIX = "ipadstream-"; // avoids collisions on public PeerJS server
+    const ICE_CONFIG = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" }
+      ]
+    };
+
+    let peer = null;
+
+    function startReceiver() {
+      document.getElementById("menu").style.display = "none";
+      document.getElementById
