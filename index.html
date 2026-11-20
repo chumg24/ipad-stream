@@ -14,13 +14,13 @@
     }
     .card {
       background: #1a1d24; border: 1px solid #2b303b; border-radius: 12px;
-      padding: 20px; width: 100%; max-width: 460px; text-align: center;
+      padding: 20px; width: 100%; max-width: 480px; text-align: center;
     }
     h1 { margin: 0 0 12px; font-size: 1.3rem; }
-    .row { display: flex; gap: 10px; justify-content: center; margin-top: 12px; }
+    .row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
     button {
       background: #3b82f6; color: white; border: none; border-radius: 8px;
-      padding: 12px 18px; font-size: 1rem; font-weight: 600; cursor: pointer;
+      padding: 10px 16px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
     }
     button.secondary { background: #2b303b; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -33,10 +33,30 @@
       font-size: 2.2rem; font-weight: 800; letter-spacing: 6px;
       color: #60a5fa; margin: 10px 0;
     }
-    #status { font-size: 0.9rem; color: #9ca3af; margin-top: 10px; }
+    #rxStatus, #txStatus { font-size: 0.9rem; color: #9ca3af; margin-top: 10px; }
+
+    /* Wrapper keeps rotation intact in fullscreen and prevents clipping */
+    #videoWrap {
+      display: none;
+      width: 100%;
+      max-width: 1280px;
+      height: 75vh;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+      align-items: center;
+      justify-content: center;
+    }
+    #videoWrap:fullscreen {
+      width: 100vw;
+      height: 100vh;
+      max-width: none;
+      border-radius: 0;
+    }
     video {
-      width: 100%; max-width: 1280px; max-height: 80vh;
-      background: #000; border-radius: 12px; display: none;
+      object-fit: contain;
+      transition: transform 0.2s ease;
     }
   </style>
 </head>
@@ -52,9 +72,13 @@
   <!-- PC Receiver UI -->
   <div class="card" id="receiverBox" style="display:none;">
     <h1>PC Receiver</h1>
-    <div>Enter this code on your iPad:</div>
+    <div>Enter this code on your iPad Stupid:</div>
     <div class="code" id="roomCode">----</div>
-    <button class="secondary" onclick="toggleFullscreen()">Fullscreen</button>
+    <div class="row">
+      <button class="secondary" onclick="toggleFullscreen()">Fullscreen</button>
+      <button class="secondary" onclick="rotateManual()">Rotate 90°</button>
+      <button class="secondary" id="autoRotateBtn" onclick="toggleAutoRotate()">Auto-Rotate: ON</button>
+    </div>
     <div id="rxStatus">Connecting to signaling server...</div>
   </div>
 
@@ -68,10 +92,12 @@
     <div id="txStatus">Enter the 4-digit code from your PC.</div>
   </div>
 
-  <video id="remoteVideo" autoplay playsinline muted></video>
+  <div id="videoWrap">
+    <video id="remoteVideo" autoplay playsinline muted></video>
+  </div>
 
   <script>
-    const PREFIX = "ipadstream-"; // avoids collisions on public PeerJS server
+    const PREFIX = "ipadstream-";
     const ICE_CONFIG = {
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
@@ -80,7 +106,45 @@
     };
 
     let peer = null;
+    let dataConn = null;
+    let currentAngle = 0;
+    let autoRotate = true;
 
+    // --- Video rotation & scaling (PC side) ---
+    function applyRotation() {
+      const wrap = document.getElementById("videoWrap");
+      const video = document.getElementById("remoteVideo");
+      const angle = ((currentAngle % 360) + 360) % 360;
+
+      video.style.transform = `rotate(${angle}deg)`;
+
+      // Swap video box dimensions when rotated 90 or 270 deg so it fills the container
+      if (angle === 90 || angle === 270) {
+        video.style.width = wrap.clientHeight + "px";
+        video.style.height = wrap.clientWidth + "px";
+      } else {
+        video.style.width = "100%";
+        video.style.height = "100%";
+      }
+    }
+
+    function rotateManual() {
+      autoRotate = false;
+      document.getElementById("autoRotateBtn").textContent = "Auto-Rotate: OFF";
+      currentAngle = (currentAngle + 90) % 360;
+      applyRotation();
+    }
+
+    function toggleAutoRotate() {
+      autoRotate = !autoRotate;
+      document.getElementById("autoRotateBtn").textContent =
+        "Auto-Rotate: " + (autoRotate ? "ON" : "OFF");
+    }
+
+    // Re-fit rotated video whenever window resizes or fullscreen toggles
+    new ResizeObserver(applyRotation).observe(document.getElementById("videoWrap"));
+
+    // --- PC Receiver ---
     function startReceiver() {
       document.getElementById("menu").style.display = "none";
       document.getElementById("receiverBox").style.display = "block";
@@ -93,14 +157,28 @@
         document.getElementById("rxStatus").textContent = "Waiting for iPad...";
       });
 
+      // Listen for orientation updates from iPad
+      peer.on("connection", (conn) => {
+        dataConn = conn;
+        conn.on("data", (msg) => {
+          if (msg && msg.type === "orientation" && autoRotate) {
+            currentAngle = msg.angle;
+            applyRotation();
+          }
+        });
+      });
+
+      // Listen for video stream from iPad
       peer.on("call", (call) => {
         document.getElementById("rxStatus").textContent = "Incoming stream...";
-        call.answer(); // Answer without sending a local stream back
+        call.answer();
 
         call.on("stream", (remoteStream) => {
+          const wrap = document.getElementById("videoWrap");
           const video = document.getElementById("remoteVideo");
           video.srcObject = remoteStream;
-          video.style.display = "block";
+          wrap.style.display = "flex";
+          applyRotation();
           video.play().catch(() => {});
           document.getElementById("rxStatus").textContent = "Connected! Streaming live.";
         });
@@ -115,9 +193,26 @@
       });
     }
 
+    // --- iPad Sender ---
     function showSender() {
       document.getElementById("menu").style.display = "none";
       document.getElementById("senderBox").style.display = "block";
+    }
+
+    function getOrientationAngle() {
+      if (screen.orientation && typeof screen.orientation.angle === "number") {
+        return screen.orientation.angle;
+      }
+      if (typeof window.orientation === "number") {
+        return window.orientation;
+      }
+      return window.innerWidth > window.innerHeight ? 90 : 0;
+    }
+
+    function sendOrientation() {
+      if (dataConn && dataConn.open) {
+        dataConn.send({ type: "orientation", angle: getOrientationAngle() });
+      }
     }
 
     async function startSharing() {
@@ -130,7 +225,6 @@
 
       try {
         status.textContent = "Opening iPad screen picker...";
-        // Must be called directly inside the button click handler for Safari
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: { frameRate: { ideal: 60, max: 60 } },
           audio: false
@@ -140,11 +234,26 @@
         peer = new Peer({ config: ICE_CONFIG });
 
         peer.on("open", () => {
+          // Open data channel for orientation sync
+          dataConn = peer.connect(PREFIX + code);
+          dataConn.on("open", () => {
+            sendOrientation();
+          });
+
+          // Send updates whenever the iPad rotates
+          if (screen.orientation) {
+            screen.orientation.addEventListener("change", sendOrientation);
+          }
+          window.addEventListener("orientationchange", sendOrientation);
+          window.addEventListener("resize", sendOrientation);
+
+          // Start video call
           const call = peer.call(PREFIX + code, stream);
           status.textContent = "Streaming to PC!";
 
           stream.getVideoTracks()[0].onended = () => {
             call.close();
+            if (dataConn) dataConn.close();
             status.textContent = "Screen sharing stopped.";
           };
         });
@@ -158,8 +267,12 @@
     }
 
     function toggleFullscreen() {
-      const video = document.getElementById("remoteVideo");
-      if (video.requestFullscreen) video.requestFullscreen();
+      const wrap = document.getElementById("videoWrap");
+      if (!document.fullscreenElement) {
+        if (wrap.requestFullscreen) wrap.requestFullscreen();
+      } else {
+        document.exitFullscreen();
+      }
     }
   </script>
 </body>
