@@ -35,7 +35,6 @@
     }
     #rxStatus, #txStatus { font-size: 0.9rem; color: #9ca3af; margin-top: 10px; }
 
-    /* Wrapper keeps rotation intact in fullscreen and prevents clipping */
     #videoWrap {
       display: none;
       width: 100%;
@@ -72,7 +71,7 @@
   <!-- PC Receiver UI -->
   <div class="card" id="receiverBox" style="display:none;">
     <h1>PC Receiver</h1>
-    <div>Enter this code on your iPad Stupid:</div>
+    <div>Enter this code on your iPad:</div>
     <div class="code" id="roomCode">----</div>
     <div class="row">
       <button class="secondary" onclick="toggleFullscreen()">Fullscreen</button>
@@ -110,15 +109,14 @@
     let currentAngle = 0;
     let autoRotate = true;
 
-    // --- Video rotation & scaling (PC side) ---
-    function applyRotation() {
+    // --- Video rotation & auto-resolution scaling (PC side) ---
+    function applyLayout() {
       const wrap = document.getElementById("videoWrap");
       const video = document.getElementById("remoteVideo");
       const angle = ((currentAngle % 360) + 360) % 360;
 
       video.style.transform = `rotate(${angle}deg)`;
 
-      // Swap video box dimensions when rotated 90 or 270 deg so it fills the container
       if (angle === 90 || angle === 270) {
         video.style.width = wrap.clientHeight + "px";
         video.style.height = wrap.clientWidth + "px";
@@ -126,13 +124,18 @@
         video.style.width = "100%";
         video.style.height = "100%";
       }
+
+      if (video.videoWidth && video.videoHeight) {
+        document.getElementById("rxStatus").textContent =
+          `Connected Retard! Streaming ${video.videoWidth}×${video.videoHeight}`;
+      }
     }
 
     function rotateManual() {
       autoRotate = false;
       document.getElementById("autoRotateBtn").textContent = "Auto-Rotate: OFF";
       currentAngle = (currentAngle + 90) % 360;
-      applyRotation();
+      applyLayout();
     }
 
     function toggleAutoRotate() {
@@ -141,8 +144,10 @@
         "Auto-Rotate: " + (autoRotate ? "ON" : "OFF");
     }
 
-    // Re-fit rotated video whenever window resizes or fullscreen toggles
-    new ResizeObserver(applyRotation).observe(document.getElementById("videoWrap"));
+    const remoteVideo = document.getElementById("remoteVideo");
+    remoteVideo.addEventListener("loadedmetadata", applyLayout);
+    remoteVideo.addEventListener("resize", applyLayout);
+    new ResizeObserver(applyLayout).observe(document.getElementById("videoWrap"));
 
     // --- PC Receiver ---
     function startReceiver() {
@@ -157,30 +162,26 @@
         document.getElementById("rxStatus").textContent = "Waiting for iPad...";
       });
 
-      // Listen for orientation updates from iPad
       peer.on("connection", (conn) => {
         dataConn = conn;
         conn.on("data", (msg) => {
           if (msg && msg.type === "orientation" && autoRotate) {
             currentAngle = msg.angle;
-            applyRotation();
+            applyLayout();
           }
         });
       });
 
-      // Listen for video stream from iPad
       peer.on("call", (call) => {
         document.getElementById("rxStatus").textContent = "Incoming stream...";
         call.answer();
 
         call.on("stream", (remoteStream) => {
           const wrap = document.getElementById("videoWrap");
-          const video = document.getElementById("remoteVideo");
-          video.srcObject = remoteStream;
+          remoteVideo.srcObject = remoteStream;
           wrap.style.display = "flex";
-          applyRotation();
-          video.play().catch(() => {});
-          document.getElementById("rxStatus").textContent = "Connected! Streaming live.";
+          applyLayout();
+          remoteVideo.play().catch(() => {});
         });
 
         call.on("close", () => {
@@ -215,6 +216,27 @@
       }
     }
 
+    // Push WebRTC to maintain sharpness & higher bitrate instead of downscaling
+    async function boostVideoQuality(call) {
+      try {
+        const pc = call.peerConnection;
+        if (!pc) return;
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+        if (!sender) return;
+
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        params.encodings[0].maxBitrate = 8_000_000; // 8 Mbps cap
+        params.encodings[0].scaleResolutionDownBy = 1.0;
+        params.degradationPreference = "maintain-resolution";
+        await sender.setParameters(params);
+      } catch (e) {
+        console.warn("Bitrate/resolution boost not fully supported:", e);
+      }
+    }
+
     async function startSharing() {
       const code = document.getElementById("codeInput").value.trim();
       const status = document.getElementById("txStatus");
@@ -226,32 +248,47 @@
       try {
         status.textContent = "Opening iPad screen picker...";
         const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: { ideal: 60, max: 60 } },
+          video: {
+            width: { ideal: 2560 },
+            height: { ideal: 1600 },
+            frameRate: { ideal: 60, max: 60 }
+          },
           audio: false
         });
+
+        // Tell WebRTC encoder to prioritize crisp text/UI detail
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack && "contentHint" in videoTrack) {
+          videoTrack.contentHint = "detail";
+        }
 
         status.textContent = "Connecting to PC...";
         peer = new Peer({ config: ICE_CONFIG });
 
         peer.on("open", () => {
-          // Open data channel for orientation sync
           dataConn = peer.connect(PREFIX + code);
-          dataConn.on("open", () => {
-            sendOrientation();
-          });
+          dataConn.on("open", sendOrientation);
 
-          // Send updates whenever the iPad rotates
           if (screen.orientation) {
             screen.orientation.addEventListener("change", sendOrientation);
           }
           window.addEventListener("orientationchange", sendOrientation);
           window.addEventListener("resize", sendOrientation);
 
-          // Start video call
           const call = peer.call(PREFIX + code, stream);
           status.textContent = "Streaming to PC!";
 
-          stream.getVideoTracks()[0].onended = () => {
+          // Apply high-res / bitrate lock once ICE connects
+          if (call.peerConnection) {
+            call.peerConnection.addEventListener("connectionstatechange", () => {
+              if (call.peerConnection.connectionState === "connected") {
+                boostVideoQuality(call);
+              }
+            });
+          }
+          setTimeout(() => boostVideoQuality(call), 1500);
+
+          videoTrack.onended = () => {
             call.close();
             if (dataConn) dataConn.close();
             status.textContent = "Screen sharing stopped.";
